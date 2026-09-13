@@ -8,66 +8,95 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-  st.video(uploaded_file)
+    st.video(uploaded_file)
 
-  if st.button("Run Flight Analysis"):
-    with st.spinner("Processing trajectory and tracking frames..."):
+    if st.button("Run Flight Analysis"):
+        with st.spinner("Processing trajectory and tracking frames..."):
 
-      # 1. Save uploaded video to a temporary file path OpenCV can read
-      tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-      tfile.write(uploaded_file.read())
+            # 1. Save uploaded video to a temporary file path OpenCV can read
+            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            tfile.write(uploaded_file.read())
 
-      # 2. Open the video with OpenCV
-      cap = cv2.VideoCapture(tfile.name)
-      width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-      height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-      fps = cap.get(cv2.CAP_PROP_FPS)
+            # 2. Open the video with OpenCV
+            cap = cv2.VideoCapture(tfile.name)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
 
-      # Setup output video writer (MP4 format)
-      output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-      fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-      out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            # Setup output video writer (MP4 format)
+            output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-      # 3. Frame-by-frame loop
-      frame_count = 0
-      while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-          break
+            # 3. Frame-by-frame loop
+            frame_count = 0
+            fgbg = cv2.createBackgroundSubtractorMOG2()
 
-        frame_count += 1
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-        # --- THIS IS WHERE THE "AI" / PROCESSING GOES ---
-        # For a quick cool effect without heavy AI training:
-        # Draw a simulated targeting reticle or text overlay on every frame
-        cv2.putText(
-            frame,
-            f"UCLan SkyView | Frame: {frame_count}",
-            (50, 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 0),
-            2,
-        )
-        cv2.circle(
-            frame, (width // 2, height // 2), 40, (0, 0, 255), 2
-        )  # Target box in center
+                frame_count += 1
 
-        # Write processed frame to output video
-        out.write(frame)
+                # Detect motion (finds the rocket/smoke against the background sky)
+                fgmask = fgbg.apply(frame)
 
-      cap.release()
-      out.release()
+                # Find contours of moving parts
+                contours, _ = cv2.findContours(
+                    fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
 
-    st.success("Analysis Complete!")
+                for c in contours:
+                    # Filter out tiny movements (noise) and focus on large moving objects (the rocket)
+                    if cv2.contourArea(c) > 500:
+                        (x, y, w, h) = cv2.boundingRect(c)
+                        # Draw a tracking box around the moving rocket/launch
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        cv2.putText(
+                            frame,
+                            "TARGET LOCKED",
+                            (x, y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 0),
+                            2,
+                        )
 
-    # 4. Show output video to user
-    st.video(output_path)
+                # Add professional flight HUD overlay text
+                cv2.putText(
+                    frame,
+                    "UCLan SkyView | TELEMETRY ACTIVE",
+                    (30, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 255),
+                    2,
+                )
+                cv2.putText(
+                    frame,
+                    f"FRAME: {frame_count}",
+                    (30, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                )
 
-    with open(output_path, "rb") as f:
-      st.download_button(
-          "Download Processed Video",
-          f,
-          file_name="uclan_skyview_tracked.mp4",
-          mime="video/mp4",
-      )
+                out.write(frame)
+
+            cap.release()
+            out.release()
+
+        st.success("Analysis Complete!")
+
+        # 4. Show output video to user
+        st.video(output_path)
+
+        with open(output_path, "rb") as f:
+            st.download_button(
+                label="Download Processed Video",
+                data=f,
+                file_name="uclan_skyview_tracked.mp4",
+                mime="video/mp4",
+            )
