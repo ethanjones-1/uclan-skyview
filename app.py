@@ -1,21 +1,10 @@
 import tempfile
 import cv2
+import numpy as np
 import streamlit as st
-from ultralytics import YOLO
 
 st.title("UCLan SkyView 🚀")
-st.write(
-    "Aerospace Launch Asset Tracker (People & Vehicles) — UCLan Aerospace"
-    " Society"
-)
-
-
-@st.cache_resource
-def load_model():
-  return YOLO("yolov8n.pt")
-
-
-model = load_model()
+st.write("Aerospace Runway & Roadway Surface Tracker — UCLan Aerospace Society")
 
 uploaded_file = st.file_uploader(
     "Choose a rocket launch or test video...", type=["mp4", "mov", "avi"]
@@ -24,8 +13,8 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
   st.video(uploaded_file)
 
-  if st.button("Run Asset Tracking"):
-    with st.spinner("AI scanning for launch crew and vehicles..."):
+  if st.button("Run Runway/Road Analysis"):
+    with st.spinner("Processing video frames and isolating surface track..."):
 
       tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
       tfile.write(uploaded_file.read())
@@ -34,15 +23,14 @@ if uploaded_file is not None:
       width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
       height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
       fps = cap.get(cv2.CAP_PROP_FPS)
+      if fps <= 0:
+        fps = 30
 
       output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
       fourcc = cv2.VideoWriter_fourcc(*"mp4v")
       out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
       frame_count = 0
-
-      # Classes we care about for a launch site: Person (0), Vehicle classes (Car, Truck, Bus, Motorcycle, Bicycle)
-      target_classes = [0, 1, 2, 3, 5, 7]
 
       while cap.isOpened():
         ret, frame = cap.read()
@@ -51,43 +39,42 @@ if uploaded_file is not None:
 
         frame_count += 1
 
-        results = model(frame, verbose=False)
+        # Convert frame to grayscale and isolate lower half asphalt/concrete surfaces (Runway/Road region)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        roi = gray[int(height * 0.4) : height, 0:width]  # Lower field of view
 
-        for r in results:
-          boxes = r.boxes
-          for box in boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            conf = float(box.conf[0])
-            cls = int(box.cls[0])
+        # Edge and contour filtering for paved strips
+        blur = cv2.GaussianBlur(roi, (5, 5), 0)
+        _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(
+            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-            # Filter for our specific target classes and confidence > 45%
-            if cls in target_classes and conf > 0.45:
-              class_name = model.names[cls].upper()
-              if class_name in ["CAR", "TRUCK", "BUS", "MOTORCYCLE", "BICYCLE"]:
-                label_text = f"VEHICLE ({conf:.2f})"
-                box_color = (0, 165, 255)  # Orange for vehicles
-              elif class_name == "PERSON":
-                label_text = f"CREW / PERSON ({conf:.2f})"
-                box_color = (0, 255, 0)  # Green for people
-              else:
-                label_text = f"{class_name} ({conf:.2f})"
-                box_color = (255, 0, 0)
+        if contours:
+          # Find the largest structural strip representing the runway/road surface
+          largest_c = max(contours, key=cv2.contourArea)
+          if cv2.contourArea(largest_c) > (width * height * 0.05):
+            x, y, w, h = cv2.boundingRect(largest_c)
+            y += int(
+                height * 0.4
+            )  # Offset back to full frame coordinate scale
 
-              cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-              cv2.putText(
-                  frame,
-                  label_text,
-                  (x1, max(y1 - 10, 20)),
-                  cv2.FONT_HERSHEY_SIMPLEX,
-                  0.5,
-                  box_color,
-                  2,
-              )
+            # Draw clean tracking box labeled exclusively as RUNWAY/ROAD
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 165, 255), 3)
+            cv2.putText(
+                frame,
+                "RUNWAY / ROAD LOCKED",
+                (x, max(y - 10, 30)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 165, 255),
+                2,
+            )
 
         # HUD Telemetry Overlay
         cv2.putText(
             frame,
-            "UCLan SkyView | SITE MONITOR ACTIVE",
+            "UCLan SkyView | SURFACE TRACKER ACTIVE",
             (30, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -109,13 +96,13 @@ if uploaded_file is not None:
       cap.release()
       out.release()
 
-    st.success("Tracking Analysis Complete!")
+    st.success("Analysis Complete!")
     st.video(output_path)
 
     with open(output_path, "rb") as f:
       st.download_button(
           label="Download Tracked Video",
           data=f,
-          file_name="uclan_skyview_tracked.mp4",
+          file_name="uclan_skyview_runway.mp4",
           mime="video/mp4",
       )
