@@ -1,33 +1,24 @@
 import tempfile
 import cv2
+import numpy as np
 import streamlit as st
-from ultralytics import YOLOWorld
 
 st.title("UCLan SkyView 🚀")
-st.write("Custom Open-Vocabulary Aerospace Asset Tracker — UCLan Aerospace Society")
-
-
-# Load the open-vocabulary YOLO-World model
-@st.cache_resource
-def load_model():
-  model = YOLOWorld("yolov8s-world.pt")
-  # Define the exact custom text classes you want to detect
-  model.set_classes(["building", "runway", "ocean", "launch site"])
-  return model
-
-
-model = load_model()
+st.write(
+    "Dynamic Terrain & Infrastructure Computer Vision Scanner — UCLan Aerospace"
+    " Society"
+)
 
 uploaded_file = st.file_uploader(
-    "Choose a rocket launch or test video...", type=["mp4", "mov", "avi"]
+    "Choose a flight test or launch video...", type=["mp4", "mov", "avi"]
 )
 
 if uploaded_file is not None:
   st.video(uploaded_file)
 
-  if st.button("Run Custom AI Analysis"):
+  if st.button("Run Dynamic Frame Analysis"):
     with st.spinner(
-        "Scanning frames for buildings, runways, ocean, and launch sites..."
+        "Scanning frames for ocean, runway, buildings, and launch site..."
     ):
 
       tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -36,7 +27,7 @@ if uploaded_file is not None:
       cap = cv2.VideoCapture(tfile.name)
       width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
       height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-      fps = cap.get(cv2.CAP_PROP_FPS)
+      fps = cap.get(cap.get(cv2.CAP_PROP_FPS) or 30)
       if fps <= 0:
         fps = 30
 
@@ -52,53 +43,95 @@ if uploaded_file is not None:
           break
 
         frame_count += 1
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Frame-skipping optimization to keep processing smooth on cloud servers
-        if frame_count % 2 != 0:
-          out.write(frame)
-          continue
+        # 1. OCEAN DETECTION (HSV Blue Range Masking)
+        lower_blue = np.array([90, 50, 50])
+        upper_blue = np.array([130, 255, 255])
+        blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
+        blue_contours, _ = cv2.findContours(
+            blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-        # Run open-vocabulary AI detection on the frame
-        results = model(frame, verbose=False)
+        for c in blue_contours:
+          if cv2.contourArea(c) > (width * height * 0.03):  # Significant size
+            x, y, w, h = cv2.boundingRect(c)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 100, 0), 2)
+            cv2.putText(
+                frame,
+                "OCEAN DETECTED",
+                (x, max(y - 10, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 100, 0),
+                2,
+            )
+            break  # Box the primary water mass
 
-        for r in results:
-          boxes = r.boxes
-          for box in boxes:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            conf = float(box.conf[0])
-            cls = int(box.cls[0])
-            class_name = model.names[cls].upper()
+        # 2. RUNWAY / TARMAC DETECTION (Flat horizontal edge analysis)
+        lower_region = gray[int(height * 0.5) : height, 0:width]
+        blurred = cv2.GaussianBlur(lower_region, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+        runway_contours, _ = cv2.findContours(
+            edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-            # Filter with a reasonable confidence threshold
-            if conf > 0.25:
-              cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 128), 2)
+        for c in runway_contours:
+          if cv2.contourArea(c) > (width * height * 0.02):
+            x, y, w, h = cv2.boundingRect(c)
+            if w > (width * 0.3):  # Runway/road is typically wide
+              y += int(height * 0.5)  # Offset back to full frame scale
+              cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 165, 255), 2)
               cv2.putText(
                   frame,
-                  f"{class_name} ({conf:.2f})",
-                  (x1, max(y1 - 10, 20)),
+                  "RUNWAY / ROAD",
+                  (x, max(y - 10, 20)),
                   cv2.FONT_HERSHEY_SIMPLEX,
-                  0.6,
-                  (0, 255, 128),
+                  0.5,
+                  (0, 165, 255),
                   2,
               )
+              break
 
-        # Telemetry HUD Overlay
+        # 3. BUILDINGS & LAUNCH SITE DETECTION (Rectangular structural contours)
+        ret_thresh, thresh = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+        struct_contours, _ = cv2.findContours(
+            thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        for c in struct_contours:
+          area = cv2.contourArea(c)
+          if (
+              (width * height * 0.005) < area < (width * height * 0.1)
+          ):  # Medium structures
+            approx = cv2.approxPolyDP(
+                c, 0.04 * cv2.arcLength(c, True), True
+            )
+            if len(approx) >= 4:   # Rectangular building shapes
+              x, y, w, h = cv2.boundingRect(c)
+              # Check if it's near the launch/ground zone (mid-to-lower frame)
+              if int(height * 0.3) < y < int(height * 0.8):
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(
+                    frame,
+                    "BUILDING / LAUNCH SITE",
+                    (x, max(y - 10, 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    2,
+                )
+                break
+
+        # Telemetry HUD
         cv2.putText(
             frame,
-            "UCLan SkyView | OPEN-VOCABULARY ACTIVE",
+            f"UCLan SkyView | SCANNING FRAME {frame_count}",
             (30, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 255, 255),
-            2,
-        )
-        cv2.putText(
-            frame,
-            f"FRAME: {frame_count}",
-            (30, 80),
-            cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
-            (255, 255, 255),
+            (0, 255, 255),
             2,
         )
 
@@ -107,13 +140,13 @@ if uploaded_file is not None:
       cap.release()
       out.release()
 
-    st.success("Analysis Complete!")
+    st.success("Dynamic Scan Complete!")
     st.video(output_path)
 
     with open(output_path, "rb") as f:
       st.download_button(
-          label="Download Custom Tracked Video",
+          label="Download Scanned Video",
           data=f,
-          file_name="uclan_skyview_custom_tracked.mp4",
+          file_name="uclan_skyview_scanned.mp4",
           mime="video/mp4",
       )
