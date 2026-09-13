@@ -1,10 +1,22 @@
 import tempfile
 import cv2
-import numpy as np
 import streamlit as st
+from ultralytics import YOLOWorld
 
 st.title("UCLan SkyView 🚀")
-st.write("Aerospace Runway & Roadway Surface Tracker — UCLan Aerospace Society")
+st.write("Custom Open-Vocabulary Aerospace Asset Tracker — UCLan Aerospace Society")
+
+
+# Load the open-vocabulary YOLO-World model
+@st.cache_resource
+def load_model():
+  model = YOLOWorld("yolov8s-world.pt")
+  # Define the exact custom text classes you want to detect
+  model.set_classes(["building", "runway", "ocean", "launch site"])
+  return model
+
+
+model = load_model()
 
 uploaded_file = st.file_uploader(
     "Choose a rocket launch or test video...", type=["mp4", "mov", "avi"]
@@ -13,8 +25,10 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
   st.video(uploaded_file)
 
-  if st.button("Run Runway/Road Analysis"):
-    with st.spinner("Processing video frames and isolating surface track..."):
+  if st.button("Run Custom AI Analysis"):
+    with st.spinner(
+        "Scanning frames for buildings, runways, ocean, and launch sites..."
+    ):
 
       tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
       tfile.write(uploaded_file.read())
@@ -39,42 +53,39 @@ if uploaded_file is not None:
 
         frame_count += 1
 
-        # Convert frame to grayscale and isolate lower half asphalt/concrete surfaces (Runway/Road region)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        roi = gray[int(height * 0.4) : height, 0:width]  # Lower field of view
+        # Frame-skipping optimization to keep processing smooth on cloud servers
+        if frame_count % 2 != 0:
+          out.write(frame)
+          continue
 
-        # Edge and contour filtering for paved strips
-        blur = cv2.GaussianBlur(roi, (5, 5), 0)
-        _, thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)
-        contours, _ = cv2.findContours(
-            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        # Run open-vocabulary AI detection on the frame
+        results = model(frame, verbose=False)
 
-        if contours:
-          # Find the largest structural strip representing the runway/road surface
-          largest_c = max(contours, key=cv2.contourArea)
-          if cv2.contourArea(largest_c) > (width * height * 0.05):
-            x, y, w, h = cv2.boundingRect(largest_c)
-            y += int(
-                height * 0.4
-            )  # Offset back to full frame coordinate scale
+        for r in results:
+          boxes = r.boxes
+          for box in boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+            cls = int(box.cls[0])
+            class_name = model.names[cls].upper()
 
-            # Draw clean tracking box labeled exclusively as RUNWAY/ROAD
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 165, 255), 3)
-            cv2.putText(
-                frame,
-                "RUNWAY / ROAD LOCKED",
-                (x, max(y - 10, 30)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 165, 255),
-                2,
-            )
+            # Filter with a reasonable confidence threshold
+            if conf > 0.25:
+              cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 128), 2)
+              cv2.putText(
+                  frame,
+                  f"{class_name} ({conf:.2f})",
+                  (x1, max(y1 - 10, 20)),
+                  cv2.FONT_HERSHEY_SIMPLEX,
+                  0.6,
+                  (0, 255, 128),
+                  2,
+              )
 
-        # HUD Telemetry Overlay
+        # Telemetry HUD Overlay
         cv2.putText(
             frame,
-            "UCLan SkyView | SURFACE TRACKER ACTIVE",
+            "UCLan SkyView | OPEN-VOCABULARY ACTIVE",
             (30, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -101,8 +112,8 @@ if uploaded_file is not None:
 
     with open(output_path, "rb") as f:
       st.download_button(
-          label="Download Tracked Video",
+          label="Download Custom Tracked Video",
           data=f,
-          file_name="uclan_skyview_runway.mp4",
+          file_name="uclan_skyview_custom_tracked.mp4",
           mime="video/mp4",
       )
