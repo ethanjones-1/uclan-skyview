@@ -1,102 +1,121 @@
-import cv2
 import tempfile
+import cv2
 import streamlit as st
+from ultralytics import YOLO
 
 st.title("UCLan SkyView 🚀")
+st.write(
+    "Aerospace Launch Asset Tracker (People & Vehicles) — UCLan Aerospace"
+    " Society"
+)
+
+
+@st.cache_resource
+def load_model():
+  return YOLO("yolov8n.pt")
+
+
+model = load_model()
+
 uploaded_file = st.file_uploader(
-    "Choose a rocket launch video...", type=["mp4", "mov", "avi"]
+    "Choose a rocket launch or test video...", type=["mp4", "mov", "avi"]
 )
 
 if uploaded_file is not None:
-    st.video(uploaded_file)
+  st.video(uploaded_file)
 
-    if st.button("Run Flight Analysis"):
-        with st.spinner("Processing trajectory and tracking frames..."):
+  if st.button("Run Asset Tracking"):
+    with st.spinner("AI scanning for launch crew and vehicles..."):
 
-            # 1. Save uploaded video to a temporary file path OpenCV can read
-            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            tfile.write(uploaded_file.read())
+      tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+      tfile.write(uploaded_file.read())
 
-            # 2. Open the video with OpenCV
-            cap = cv2.VideoCapture(tfile.name)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
+      cap = cv2.VideoCapture(tfile.name)
+      width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+      height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+      fps = cap.get(cv2.CAP_PROP_FPS)
 
-            # Setup output video writer (MP4 format)
-            output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+      output_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+      fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+      out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-            # 3. Frame-by-frame loop
-            frame_count = 0
-            fgbg = cv2.createBackgroundSubtractorMOG2()
+      frame_count = 0
 
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
+      # Classes we care about for a launch site: Person (0), Vehicle classes (Car, Truck, Bus, Motorcycle, Bicycle)
+      target_classes = [0, 1, 2, 3, 5, 7]
 
-                frame_count += 1
+      while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+          break
 
-                # Detect motion (finds the rocket/smoke against the background sky)
-                fgmask = fgbg.apply(frame)
+        frame_count += 1
 
-                # Find contours of moving parts
-                contours, _ = cv2.findContours(
-                    fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
+        results = model(frame, verbose=False)
 
-                for c in contours:
-                    # Filter out tiny movements (noise) and focus on large moving objects (the rocket)
-                    if cv2.contourArea(c) > 500:
-                        (x, y, w, h) = cv2.boundingRect(c)
-                        # Draw a tracking box around the moving rocket/launch
-                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                        cv2.putText(
-                            frame,
-                            "TARGET LOCKED",
-                            (x, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 0),
-                            2,
-                        )
+        for r in results:
+          boxes = r.boxes
+          for box in boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+            cls = int(box.cls[0])
 
-                # Add professional flight HUD overlay text
-                cv2.putText(
-                    frame,
-                    "UCLan SkyView | TELEMETRY ACTIVE",
-                    (30, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 255, 255),
-                    2,
-                )
-                cv2.putText(
-                    frame,
-                    f"FRAME: {frame_count}",
-                    (30, 80),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    2,
-                )
+            # Filter for our specific target classes and confidence > 45%
+            if cls in target_classes and conf > 0.45:
+              class_name = model.names[cls].upper()
+              if class_name in ["CAR", "TRUCK", "BUS", "MOTORCYCLE", "BICYCLE"]:
+                label_text = f"VEHICLE ({conf:.2f})"
+                box_color = (0, 165, 255)  # Orange for vehicles
+              elif class_name == "PERSON":
+                label_text = f"CREW / PERSON ({conf:.2f})"
+                box_color = (0, 255, 0)  # Green for people
+              else:
+                label_text = f"{class_name} ({conf:.2f})"
+                box_color = (255, 0, 0)
 
-                out.write(frame)
+              cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+              cv2.putText(
+                  frame,
+                  label_text,
+                  (x1, max(y1 - 10, 20)),
+                  cv2.FONT_HERSHEY_SIMPLEX,
+                  0.5,
+                  box_color,
+                  2,
+              )
 
-            cap.release()
-            out.release()
+        # HUD Telemetry Overlay
+        cv2.putText(
+            frame,
+            "UCLan SkyView | SITE MONITOR ACTIVE",
+            (30, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
+            2,
+        )
+        cv2.putText(
+            frame,
+            f"FRAME: {frame_count}",
+            (30, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+        )
 
-        st.success("Analysis Complete!")
+        out.write(frame)
 
-        # 4. Show output video to user
-        st.video(output_path)
+      cap.release()
+      out.release()
 
-        with open(output_path, "rb") as f:
-            st.download_button(
-                label="Download Processed Video",
-                data=f,
-                file_name="uclan_skyview_tracked.mp4",
-                mime="video/mp4",
-            )
+    st.success("Tracking Analysis Complete!")
+    st.video(output_path)
+
+    with open(output_path, "rb") as f:
+      st.download_button(
+          label="Download Tracked Video",
+          data=f,
+          file_name="uclan_skyview_tracked.mp4",
+          mime="video/mp4",
+      )
